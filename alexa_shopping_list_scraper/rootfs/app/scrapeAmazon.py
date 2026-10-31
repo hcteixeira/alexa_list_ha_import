@@ -202,6 +202,49 @@ class AmazonShoppingListScraper:
             time.sleep(1)
             return
 
+    COOKIE_FILE = "/data/amazon_cookies.json"
+    _CDP_COOKIE_KEYS = ('name', 'value', 'domain', 'path', 'secure', 'httpOnly', 'sameSite', 'expires')
+
+    def _save_cookies(self):
+        """Export Amazon cookies via CDP so the session survives the per-run temporary profile.
+        (Chrome flushes its cookie DB lazily and is killed right after the scrape, so cookies set
+        during login never reach disk on their own.)"""
+        if not os.path.isdir("/data") or not self.driver:
+            return
+        try:
+            cookies = self.driver.execute_cdp_cmd('Network.getAllCookies', {}).get('cookies', [])
+            cookies = [c for c in cookies if 'amazon' in c.get('domain', '')]
+            tmp = self.COOKIE_FILE + ".tmp"
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+                json.dump(cookies, f)
+            os.replace(tmp, self.COOKIE_FILE)
+            persistent = sum(1 for c in cookies if not c.get('session'))
+            log(f"💾 Saved {len(cookies)} Amazon cookies ({persistent} persistent)")
+        except Exception as e:
+            log(f"⚠️  Could not save cookies: {e}")
+
+    def _restore_cookies(self):
+        if not os.path.exists(self.COOKIE_FILE):
+            log("ℹ️  No saved cookies yet")
+            return
+        try:
+            with open(self.COOKIE_FILE) as f:
+                saved = json.load(f)
+            now = time.time()
+            params = []
+            for c in saved:
+                if not c.get('session') and 0 < c.get('expires', -1) < now:
+                    continue  # expired
+                p = {k: c[k] for k in self._CDP_COOKIE_KEYS if k in c}
+                if c.get('session'):
+                    p.pop('expires', None)
+                params.append(p)
+            self.driver.execute_cdp_cmd('Network.setCookies', {'cookies': params})
+            age_min = (now - os.path.getmtime(self.COOKIE_FILE)) / 60
+            log(f"🍪 Restored {len(params)} Amazon cookies (saved {age_min:.0f} min ago)")
+        except Exception as e:
+            log(f"⚠️  Could not restore cookies: {e}")
+
     def _create_fresh_profile_dir(self):
         self.temp_profile_dir = tempfile.mkdtemp(prefix="amazon_chrome_")
         return self.temp_profile_dir
@@ -454,18 +497,24 @@ class AmazonShoppingListScraper:
         log("🔐 Checking authentication state...")
         
         # 1. First, check if we are already logged in via persistent cookies
+        self._restore_cookies()
         try:
             log("📍 Navigating to shopping list to check session...")
             self.driver.get(self.shopping_list_url)
             time.sleep(5)  # Increased wait time for session check (esp. for headless)
             
             # Check for the list element
-            try:
-                self.driver.find_element(By.CLASS_NAME, 'virtual-list')
+            # An empty list may not render .virtual-list, so also accept "on the list page, not on an auth page"
+            url = self.driver.current_url.lower()
+            on_list = 'alexashoppinglist' in url and not any(
+                k in url for k in ('/ap/signin', '/ax/claim', '/checkpoint/')) \
+                and 'shopping list' in (self.driver.title or '').lower()
+            if self.driver.find_elements(By.CLASS_NAME, 'virtual-list') or on_list:
                 log("✅ Session restored! Already logged in.")
                 return True
-            except:
-                log("ℹ️  No active session found, proceeding to login...")
+            log("ℹ️  No active session found, proceeding to login...")
+            if self.debug:
+                log(f"   Session check landed on: {self.driver.current_url[:150]} (title: {self.driver.title})")
         except Exception as e:
             log(f"⚠️  Session check failed: {e}")
 
@@ -1065,9 +1114,12 @@ class AmazonShoppingListScraper:
         if not self.login_with_email_password():
             log("❌ Authentication failed!")
             return False
-            
+        self._save_cookies()
+
         # Scrape the list
-        return self.scrape_shopping_list()
+        ok = self.scrape_shopping_list()
+        self._save_cookies()
+        return ok
 
     def __del__(self):
         """Cleanup on object destruction"""

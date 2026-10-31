@@ -1,3 +1,7 @@
+## 2.2.5 - SESSION PERSISTENCE FIX
+- **Session Survives Between Cycles** - Amazon cookies are now saved to `/data/amazon_cookies.json` after login and restored at the start of each cycle. Since 2.2.1 every cycle used a fresh temporary profile, so the scraper performed a full email/password/OTP login every polling interval, which is the likely trigger for the anti-bot checkpoint pages Amazon started inserting (`/checkpoint/continue`). With the session restored, a cycle takes ~12 s instead of ~45 s and no login is needed until Amazon expires the session.
+- **Session Check Works With an Empty List** - An empty shopping list may not render `.virtual-list`; the session check now also accepts being on the list page (not on a sign-in/claim/checkpoint page). With `Debug_Log`, the page the check landed on is logged.
+
 ## 2.2.4 - 2FA SECRET VALIDATION
 - **Clear 2FA Secret Errors** - `Amazon_Secret` is checked before use. A 6-digit one-time code entered instead of the secret key, or invalid characters (0/1/8/9), are now reported clearly instead of `Non-base32 digit found`.
 - **Lenient Secret Input** - Dashes, line breaks, lowercase letters and a pasted `otpauth://` URI are accepted.
