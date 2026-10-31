@@ -1,0 +1,56 @@
+# Builds a prebuilt amd64 image of the add-on and publishes it to GHCR.
+# A Home Assistant add-on that points to a prebuilt image (config.yaml `image:`) is
+# pulled instead of built locally, so HA backups store only its /data, not a ~640 MB image.
+name: Build add-on image
+
+on:
+  push:
+    branches: [ha-image]
+    paths:
+      - "alexa_shopping_list_scraper/**"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/alexa-shopping-list-scraper-amd64
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read add-on version
+        id: meta
+        run: |
+          version=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' alexa_shopping_list_scraper/config.yaml)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: alexa_shopping_list_scraper
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+          labels: |
+            io.hass.type=addon
+            io.hass.arch=amd64
+            io.hass.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:latest
